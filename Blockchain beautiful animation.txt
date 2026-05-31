@@ -1,0 +1,610 @@
+import java.security.MessageDigest;
+import java.util.ArrayList;
+
+// ====================== GLOBAL STATE ======================
+Blockchain bc;
+DifficultySlider diffSlider;
+
+Button btnAliceToBob, btnBobToCharlie, btnCharlieToAlice, mineBtn, resetBtn, validateBtn;
+
+String statusMsg = "Ready";
+boolean isMining = false;
+boolean isValidating = false; 
+
+// Timers for emojis
+long thumbsUpTimer = 0;
+long wisdomTimer = 0;
+
+// Animated transactions during consensus
+ArrayList<AnimTx> floatingTxs = new ArrayList<AnimTx>();
+
+// scrolling world
+float scrollX = 0;
+float scrollY = 0;
+float contentW = 2000;
+float contentH = 1200;
+
+// scrollbars
+ScrollBar hBar, vBar;
+
+// drag tracking
+float lastMouseX, lastMouseY;
+
+// ====================== SETUP ======================
+void setup() {
+  size(1000, 900);
+  textFont(createFont("SansSerif", 14));
+
+  bc = new Blockchain();
+
+  diffSlider = new DifficultySlider(50, 50, 900, 30);
+  diffSlider.val = 3; 
+
+  float y1 = 200; // Row 1 for transactions
+  float y2 = 255; // Row 2 for system actions
+  
+  // Specific Transaction Buttons
+  btnAliceToBob = new Button(50, y1, 160, 45, "Alice -> Bob ($10)");
+  btnBobToCharlie = new Button(230, y1, 160, 45, "Bob -> Charlie ($10)");
+  btnCharlieToAlice = new Button(410, y1, 160, 45, "Charlie -> Alice ($10)");
+  
+  // System Buttons
+  mineBtn = new Button(50, y2, 160, 45, "Mine Block\n(+50 Reward)");
+  validateBtn = new Button(230, y2, 160, 45, "Validate Chain\n(Consensus)");
+  resetBtn = new Button(410, y2, 160, 45, "Reset Chain");
+
+  hBar = new ScrollBar(true);
+  vBar = new ScrollBar(false);
+}
+
+// ====================== DRAW ======================
+void draw() {
+  background(25);
+  updateScrollBounds();
+
+  // 1. DRAW STATIC UI
+  diffSlider.draw();
+  drawPeers();
+  
+  btnAliceToBob.draw();
+  btnBobToCharlie.draw();
+  btnCharlieToAlice.draw();
+  mineBtn.draw();
+  validateBtn.draw();
+  resetBtn.draw();
+  
+  drawHUD();
+  drawScrollbars();
+
+  // 2. DRAW SCROLLING CONTENT (Blockchain)
+  pushMatrix();
+  translate(scrollX, scrollY);
+  bc.draw(50, 360); 
+  popMatrix();
+  
+  // 3. DRAW ANIMATED TRANSACTIONS (Consensus moving text)
+  if (isValidating) {
+    for (AnimTx atx : floatingTxs) {
+      atx.update();
+      atx.draw();
+    }
+  }
+}
+
+// ====================== PEERS (WALLETS) ======================
+void drawPeers() {
+  fill(255);
+  textSize(16);
+  text("Peer Network Balances (Calculated from Ledger):", 50, 110);
+  
+  String[] peers = {"Alice", "Bob", "Charlie", "Miner"};
+  for (int i = 0; i < peers.length; i++) {
+    float bal = bc.getBalance(peers[i]);
+    
+    fill(40, 40, 50);
+    stroke(100);
+    rect(50 + (i * 230), 125, 210, 50, 8);
+    noStroke();
+    
+    fill(200, 200, 255);
+    text(peers[i] + ":", 60 + (i * 230), 155);
+    
+    fill(100, 255, 100);
+    text("$" + bal, 150 + (i * 230), 155);
+  }
+}
+
+// ====================== HUD & EMOJIS ======================
+void drawHUD() {
+  fill(255);
+  textSize(16);
+  if (isMining) {
+    fill(255, 200, 50); 
+  } else if (isValidating) {
+    fill(100, 200, 255); 
+  } else {
+    if (statusMsg.contains("failed") || statusMsg.contains("WARNING") || statusMsg.contains("FAILED")) fill(255, 80, 80);
+    else if (statusMsg.contains("passed") || statusMsg.contains("SAFE")) fill(100, 255, 100);
+    else fill(255);
+  }
+  
+  text("Status: " + statusMsg, 50, height-60);
+  
+  fill(200);
+  text("Difficulty: " + diffSlider.val + " | Blocks: " + bc.chain.size() + " | Pending TXs: " + bc.pending.size(), 50, height-35);
+  
+  // Draw Disappearing Emojis after successful consensus
+  textSize(40);
+  if (millis() < thumbsUpTimer) {
+    text("👍", width - 150, height - 40);
+  }
+  if (millis() < wisdomTimer) {
+    text("🧠", width - 80, height - 40);
+  }
+  textSize(14); // Reset text size
+}
+
+// ====================== SCROLL ======================
+void updateScrollBounds() {
+  contentW = max(width, 100 + (bc.chain.size() * 320) + 320); 
+  scrollX = constrain(scrollX, -contentW + width, 0);
+  scrollY = constrain(scrollY, -contentH + height, 0);
+}
+
+void drawScrollbars() {
+  hBar.draw(scrollX, contentW, width);
+  vBar.draw(scrollY, contentH, height);
+}
+
+// ====================== INPUT ======================
+void mousePressed() {
+  lastMouseX = mouseX;
+  lastMouseY = mouseY;
+
+  if (hBar.hit(mouseX, mouseY)) { hBar.dragging = true; return; }
+  if (vBar.hit(mouseX, mouseY)) { vBar.dragging = true; return; }
+  
+  if (isMining || isValidating) return;
+
+  if (diffSlider.hit(mouseX, mouseY)) { diffSlider.update(mouseX); return; }
+
+  if (btnAliceToBob.hit(mouseX, mouseY)) bc.addTx("Alice", "Bob", 10.0f);
+  if (btnBobToCharlie.hit(mouseX, mouseY)) bc.addTx("Bob", "Charlie", 10.0f);
+  if (btnCharlieToAlice.hit(mouseX, mouseY)) bc.addTx("Charlie", "Alice", 10.0f);
+  
+  if (mineBtn.hit(mouseX, mouseY)) startMining();
+  if (validateBtn.hit(mouseX, mouseY)) validateBlockchain();
+  if (resetBtn.hit(mouseX, mouseY)) resetChain();
+}
+
+void mouseDragged() {
+  if (hBar.dragging) {
+    scrollX = hBar.toScroll(mouseX, contentW, width);
+    return;
+  }
+  if (vBar.dragging) {
+    scrollY = vBar.toScroll(mouseY, contentH, height);
+    return;
+  }
+  scrollX += mouseX - lastMouseX;
+  scrollY += mouseY - lastMouseY;
+  lastMouseX = mouseX;
+  lastMouseY = mouseY;
+}
+
+void mouseReleased() {
+  hBar.dragging = false;
+  vBar.dragging = false;
+}
+
+// ====================== ACTIONS ======================
+void startMining() {
+  isMining = true;
+  statusMsg = "Miner is solving cryptographic puzzle...";
+  thread("runMinerThread"); 
+}
+
+void runMinerThread() {
+  bc.mine(diffSlider.val, "Miner");
+  isMining = false;
+  statusMsg = "Block Mined! Reward added to Miner's balance.";
+}
+
+void validateBlockchain() {
+  isValidating = true;
+  thread("runValidatorThread");
+}
+
+void runValidatorThread() {
+  String actualResult = bc.validateAndGetStatus();
+  boolean isTampered = actualResult.contains("WARNING");
+
+  // 1. Setup floating text to simulate reading every transaction across the network
+  floatingTxs.clear();
+  float baseTxY = 360 + 200; // Approx Y where transactions are drawn in blocks
+  for (int i = 0; i < bc.chain.size(); i++) {
+    Block b = bc.chain.get(i);
+    float blockX = 50 + i * 320;
+    for (int t = 0; t < min(b.transactions.size(), 8); t++) {
+      // Spawn text elements flying from blocks to the network balance UI
+      floatingTxs.add(new AnimTx(b.transactions.get(t).toString(), blockX + scrollX, baseTxY + (t * 20) + scrollY));
+    }
+  }
+
+  // 2. Animate the network consensus process
+  String[] nodes = {"Alice", "Bob", "Charlie", "Miner"};
+  
+  for (int i = 0; i < nodes.length; i++) {
+    statusMsg = "Consensus Check [" + (i+1) + "/" + nodes.length + "]: Node " + nodes[i] + " reading all ledger txs...";
+    delay(1000); // 1 second per node to watch the text fly
+  }
+  
+  statusMsg = "Consensus Network Syncing results...";
+  delay(800);
+
+  // 3. Display the final consensus result and trigger emojis
+  if (isTampered) {
+    statusMsg = "CONSENSUS FAILED: Nodes detected network tampering! " + actualResult;
+  } else {
+    statusMsg = "CONSENSUS REACHED: All nodes confirm ledger is perfectly SAFE.";
+    // Set timers to show emojis for 4 seconds
+    thumbsUpTimer = millis() + 4000;
+    wisdomTimer = millis() + 4000;
+  }
+  
+  isValidating = false; 
+  floatingTxs.clear();
+}
+
+void resetChain() {
+  bc = new Blockchain();
+  statusMsg = "Blockchain reset. Genesis Block recreated.";
+}
+
+// ====================== BLOCKCHAIN CORE ======================
+
+// Helper Class to Animate Moving Text during Validation
+class AnimTx {
+  String text;
+  float x, y;
+  float targetX, targetY;
+  float speed;
+  
+  AnimTx(String t, float startX, float startY) {
+    text = t;
+    x = startX;
+    y = startY;
+    targetX = random(50, 800); // Fly towards the peer network UI area at the top
+    targetY = random(100, 150);
+    speed = random(0.02, 0.05); // Smooth interpolation speed
+  }
+  
+  void update() {
+    x = lerp(x, targetX, speed);
+    y = lerp(y, targetY, speed);
+  }
+  
+  void draw() {
+    fill(150, 255, 150, 220);
+    textSize(14);
+    text(text, x, y);
+  }
+}
+
+class Transaction {
+  String sender, recipient;
+  float amount;
+  boolean isCoinbase;
+
+  Transaction(String s, String r, float a, boolean coinbase) {
+    sender = s; recipient = r; amount = a; isCoinbase = coinbase;
+  }
+
+  String toString() {
+    if (isCoinbase) return "REWARD -> " + recipient + " : $" + amount;
+    return sender + " -> " + recipient + " : $" + amount;
+  }
+}
+
+class Block {
+  int nonce = 0;
+  int difficulty;
+  ArrayList<Transaction> transactions;
+  String prevHash;
+  String hash;
+  long miningTimeMs;
+
+  Block(ArrayList<Transaction> txs, String prev, int diff) {
+    transactions = new ArrayList<Transaction>(txs);
+    prevHash = prev;
+    difficulty = diff;
+
+    long start = millis();
+    hash = mineBlock();
+    miningTimeMs = millis() - start;
+  }
+
+  String calculateHash() {
+    try {
+      String data = prevHash + nonce + transactions.toString();
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] digest = md.digest(data.getBytes("UTF-8"));
+
+      StringBuilder sb = new StringBuilder();
+      for (byte b : digest) sb.append(String.format("%02x", b));
+      return sb.toString();
+    } catch (Exception e) {
+      return "ERROR";
+    }
+  }
+
+  String mineBlock() {
+    String target = new String(new char[difficulty]).replace('\0', '0');
+    String h = calculateHash();
+
+    while (!h.substring(0, difficulty).equals(target)) {
+      nonce++;
+      h = calculateHash();
+    }
+    return h;
+  }
+}
+
+class Blockchain {
+  ArrayList<Block> chain = new ArrayList<Block>();
+  ArrayList<Transaction> pending = new ArrayList<Transaction>();
+
+  Blockchain() {
+    ArrayList<Transaction> genesisTxs = new ArrayList<Transaction>();
+    genesisTxs.add(new Transaction("Network", "Alice", 100.0f, true));
+    genesisTxs.add(new Transaction("Network", "Bob", 100.0f, true));
+    genesisTxs.add(new Transaction("Network", "Charlie", 100.0f, true));
+    chain.add(new Block(genesisTxs, "0", 1)); 
+  }
+
+  void addTx(String s, String r, float a) {
+    pending.add(new Transaction(s, r, a, false));
+    statusMsg = "Transaction queued: " + s + " to " + r;
+  }
+
+  void mine(int diff, String minerAddress) {
+    diff = constrain(diff, 1, 8);
+    
+    ArrayList<Transaction> blockTxs = new ArrayList<Transaction>();
+    blockTxs.add(new Transaction("Network", minerAddress, 50.0f, true));
+    blockTxs.addAll(pending);
+    
+    chain.add(new Block(blockTxs, chain.get(chain.size()-1).hash, diff));
+    pending.clear();
+  }
+
+  float getBalance(String user) {
+    float balance = 0;
+    for (Block b : chain) {
+      for (Transaction tx : b.transactions) {
+        if (tx.sender.equals(user)) balance -= tx.amount;
+        if (tx.recipient.equals(user)) balance += tx.amount;
+      }
+    }
+    for (Transaction tx : pending) {
+      if (tx.sender.equals(user)) balance -= tx.amount;
+    }
+    return balance;
+  }
+
+  String validateAndGetStatus() {
+    for (int i = 1; i < chain.size(); i++) {
+      Block currentBlock = chain.get(i);
+      Block previousBlock = chain.get(i - 1);
+
+      if (!currentBlock.hash.equals(currentBlock.calculateHash())) {
+        return "WARNING: Block #" + i + " cryptographic hash corrupted.";
+      }
+      if (!currentBlock.prevHash.equals(previousBlock.hash)) {
+        return "WARNING: Structural integrity compromised at Block #" + i + ".";
+      }
+      String target = new String(new char[currentBlock.difficulty]).replace('\0', '0');
+      if (!currentBlock.hash.substring(0, currentBlock.difficulty).equals(target)) {
+        return "WARNING: Proof of Work invalid for Block #" + i + ".";
+      }
+    }
+    return "Network is structurally and cryptographically sound.";
+  }
+
+  void draw(float x, float y) {
+    fill(255);
+    textSize(18);
+    text("Blockchain Ledger (Drag to pan)", x, y - 20);
+    textSize(14);
+
+    // Draw lines connecting all blocks to all other blocks (Fully Connected Graph)
+    strokeWeight(1);
+    stroke(100, 150, 255, 60); // Transparent light blue links
+    for (int i = 0; i < chain.size(); i++) {
+      for (int j = i + 1; j < chain.size(); j++) {
+        float x1 = x + i * 320 + 150; // Center top of block i
+        float x2 = x + j * 320 + 150; // Center top of block j
+        float linkY = y - 5;
+        // Draw an arcing line between all blocks
+        noFill();
+        bezier(x1, linkY, x1, linkY - (j-i)*30, x2, linkY - (j-i)*30, x2, linkY);
+      }
+    }
+    noStroke();
+
+    // Draw Blocks
+    for (int i = 0; i < chain.size(); i++) {
+      Block b = chain.get(i);
+      float bx = x + i * 320;
+
+      fill(40);
+      stroke(50, 200, 50); // Valid block color
+      strokeWeight(2);
+      rect(bx, y, 300, 380, 10);
+      noStroke();
+      
+      fill(255);
+      text("Block #" + i + (i == 0 ? " (Genesis)" : ""), bx + 15, y + 25);
+      
+      fill(180);
+      text("Difficulty: " + b.difficulty, bx + 15, y + 50);
+      text("Nonce: " + b.nonce, bx + 15, y + 70);
+      text("Time: " + b.miningTimeMs + " ms", bx + 15, y + 90);
+      
+      fill(150, 200, 255);
+      text("Prev: " + b.prevHash.substring(0, min(24, b.prevHash.length())) + "...", bx + 15, y + 120);
+      fill(255, 200, 150);
+      text("Hash: " + b.hash.substring(0, min(24, b.hash.length())) + "...", bx + 15, y + 140);
+      
+      fill(255);
+      text("Transactions (" + b.transactions.size() + "):", bx + 15, y + 175);
+      
+      for(int t = 0; t < min(b.transactions.size(), 8); t++) {
+        Transaction tx = b.transactions.get(t);
+        if (tx.isCoinbase) fill(255, 215, 0); 
+        else fill(200, 200, 100);
+        text(tx.toString(), bx + 15, y + 200 + (t * 20));
+      }
+      if(b.transactions.size() > 8) {
+        fill(150);
+        text("...and " + (b.transactions.size() - 8) + " more", bx + 15, y + 200 + (8 * 20));
+      }
+    }
+    
+    // Draw "Pending Block"
+    float px = x + chain.size() * 320;
+    fill(30);
+    
+    if (isMining) {
+      strokeWeight(2);
+      stroke(255, 150, 0, 150 + (sin(frameCount * 0.2) * 105)); // Pulsing
+    } else {
+      strokeWeight(2);
+      stroke(100);
+    }
+    
+    rect(px, y, 300, 380, 10);
+    noStroke();
+    
+    fill(255);
+    text("Pending Mempool", px + 15, y + 25);
+    fill(180);
+    if (isMining) {
+      fill(255, 200, 50);
+      text("Mining block (+50 reward pending)", px + 15, y + 70);
+    } else {
+      text("Awaiting Miner...", px + 15, y + 70);
+    }
+    fill(200, 200, 100);
+    for(int t = 0; t < min(pending.size(), 8); t++) {
+      text(pending.get(t).toString(), px + 15, y + 120 + (t * 20));
+    }
+  }
+}
+
+// ====================== SLIDER ======================
+class DifficultySlider {
+  float x, y, w, h;
+  int val = 3; 
+
+  DifficultySlider(float x, float y, float w, float h) {
+    this.x=x; this.y=y; this.w=w; this.h=h;
+  }
+
+  void draw() {
+    fill(60);
+    rect(x, y, w, h, 5);
+
+    fill(200, 80, 80);
+    rect(x, y, map(val, 1, 8, 0, w), h, 5);
+
+    fill(255);
+    text("Network Mining Difficulty: " + val + " (Higher = Slower hashes)", x + 15, y + 20);
+  }
+
+  void update(float mx) {
+    val = (int)map(mx, x, x+w, 1, 8);
+    val = constrain(val, 1, 8);
+  }
+
+  boolean hit(float px, float py) {
+    return px>x && px<x+w && py>y && py<y+h;
+  }
+}
+
+// ====================== BUTTON ======================
+class Button {
+  float x,y,w,h;
+  String label;
+  color baseColor, activeColor;
+
+  Button(float x,float y,float w,float h,String l){
+    this.x=x; this.y=y; this.w=w; this.h=h;
+    label=l;
+    if (l.contains("Mine")) baseColor = color(180, 120, 40);
+    else if (l.contains("Validate")) baseColor = color(50, 180, 120);
+    else if (l.contains("Reset")) baseColor = color(180, 50, 50);
+    else baseColor = color(50, 120, 180);
+  }
+
+  void draw() {
+    if (isMining || isValidating) fill(50); // disabled
+    else if (hit(mouseX, mouseY)) fill(red(baseColor)+30, green(baseColor)+30, blue(baseColor)+30);
+    else fill(baseColor);
+    
+    rect(x,y,w,h, 5);
+
+    fill(255);
+    textAlign(CENTER,CENTER);
+    text(label, x+w/2, y+h/2 - 2);
+    textAlign(LEFT,BASELINE);
+  }
+
+  boolean hit(float px,float py){
+    return px>x && px<x+w && py>y && py<y+h;
+  }
+}
+
+// ====================== SCROLLBAR ======================
+class ScrollBar {
+  boolean horizontal;
+  boolean dragging = false;
+
+  ScrollBar(boolean horizontal) {
+    this.horizontal = horizontal;
+  }
+
+  void draw(float scroll, float contentSize, float viewSize) {
+    float barX = horizontal ? 0 : width-15;
+    float barY = horizontal ? height-15 : 0;
+    float barW = horizontal ? width-15 : 15;
+    float barH = horizontal ? 15 : height-15;
+
+    fill(50);
+    rect(barX, barY, barW, barH);
+
+    float ratio = constrain(scroll / (viewSize - contentSize), -1, 0);
+    float thumb;
+
+    if (horizontal) {
+      thumb = map(ratio, -1, 0, 0, barW - 50);
+      fill(dragging ? 220 : 180);
+      rect(thumb, barY, 50, barH, 10);
+    } else {
+      thumb = map(ratio, -1, 0, 0, barH - 50);
+      fill(dragging ? 220 : 180);
+      rect(barX, thumb, barW, 50, 10);
+    }
+  }
+
+  boolean hit(float mx, float my) {
+    if (horizontal) return my > height-15;
+    else return mx > width-15;
+  }
+
+  float toScroll(float mousePos, float contentSize, float viewSize) {
+    float ratio = map(mousePos, 0, horizontal ? width : height, 0, 1);
+    ratio = constrain(ratio, 0, 1);
+    return -ratio * (contentSize - viewSize);
+  }
+}
