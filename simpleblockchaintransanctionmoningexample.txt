@@ -1,0 +1,164 @@
+import java.security.MessageDigest;
+import java.util.ArrayList;
+
+// Global State
+Blockchain bc = new Blockchain();
+DifficultySlider diffSlider;
+ArrayList textFields = new ArrayList();
+Button addBtn, mineBtn, validateBtn, resetBtn;
+String statusMsg = "Ready";
+
+void setup() {
+  size(600, 800);
+  textFont(createFont("SansSerif", 16));
+  
+  // UI Setup
+  diffSlider = new DifficultySlider(50, 50, 500, 40);
+  float y = 120;
+  textFields.add(new TextBox(50, y, 500, 50, "Sender", "Alice")); y += 70;
+  textFields.add(new TextBox(50, y, 500, 50, "Recipient", "Bob")); y += 70;
+  textFields.add(new TextBox(50, y, 500, 50, "Amount", "10")); y += 70;
+  
+  addBtn = new Button(50, y, 240, 50, "Add Tx");
+  mineBtn = new Button(310, y, 240, 50, "Mine Block"); y += 70;
+  validateBtn = new Button(50, y, 240, 50, "Validate Chain");
+  resetBtn = new Button(310, y, 240, 50, "Reset");
+}
+
+void draw() {
+  background(30);
+  diffSlider.draw();
+  for(int i = 0; i < textFields.size(); i++) {
+    ((TextBox)textFields.get(i)).draw();
+  }
+  addBtn.draw(); mineBtn.draw(); validateBtn.draw(); resetBtn.draw();
+  
+  fill(255);
+  text("Status: " + statusMsg, 50, 750);
+  text("Difficulty: " + diffSlider.val, 50, 40);
+  
+  bc.draw(50, 450);
+}
+
+void mousePressed() {
+  if (diffSlider.hit(mouseX, mouseY)) diffSlider.update(mouseX);
+  for(int i = 0; i < textFields.size(); i++) {
+    TextBox tb = (TextBox)textFields.get(i);
+    if(tb.hit(mouseX, mouseY)) tb.toggle();
+  }
+  if (addBtn.hit(mouseX, mouseY)) {
+    bc.addTx(((TextBox)textFields.get(0)).text, ((TextBox)textFields.get(1)).text, float(((TextBox)textFields.get(2)).text));
+    statusMsg = "Transaction Pending";
+  }
+  if (mineBtn.hit(mouseX, mouseY)) {
+    bc.mine(diffSlider.val);
+    statusMsg = "Block Mined!";
+  }
+  if (validateBtn.hit(mouseX, mouseY)) statusMsg = bc.isValid() ? "Chain Valid" : "Chain Corrupted";
+  if (resetBtn.hit(mouseX, mouseY)) bc = new Blockchain();
+}
+
+void keyPressed() {
+  for(int i = 0; i < textFields.size(); i++) {
+    TextBox tb = (TextBox)textFields.get(i);
+    if(tb.active) tb.append(key);
+  }
+}
+
+// --- Logic ---
+class Transaction {
+  String s, r; float a;
+  Transaction(String s, String r, float a) { this.s=s; this.r=r; this.a=a; }
+}
+
+class Block {
+  int nonce = 0, diff;
+  ArrayList txs;
+  String prevHash, hash;
+  
+  Block(ArrayList t, String p, int d) {
+    this.txs = new ArrayList(t);
+    this.prevHash = p;
+    this.diff = d;
+    this.hash = mine();
+  }
+  
+  String calculateHash() {
+    String data = prevHash + nonce + txs.size();
+    try {
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] b = md.digest(data.getBytes());
+      StringBuilder sb = new StringBuilder();
+      for(int i = 0; i < b.length; i++) sb.append(String.format("%02x", b[i]));
+      return sb.toString();
+    } catch(Exception e) { return ""; }
+  }
+  
+  String mine() {
+    String target = "";
+    for(int i = 0; i < diff; i++) target += "0";
+    String h = calculateHash();
+    while (!h.substring(0, diff).equals(target)) {
+      nonce++;
+      h = calculateHash();
+    }
+    return h;
+  }
+}
+
+class Blockchain {
+  ArrayList chain = new ArrayList();
+  ArrayList pending = new ArrayList();
+  
+  Blockchain() { chain.add(new Block(new ArrayList(), "0", 1)); }
+  
+  void addTx(String s, String r, float a) { pending.add(new Transaction(s, r, a)); }
+  
+  void mine(int d) {
+    chain.add(new Block(pending, ((Block)chain.get(chain.size()-1)).hash, d));
+    pending.clear();
+  }
+  
+  boolean isValid() {
+    for (int i = 1; i < chain.size(); i++) {
+      if (!((Block)chain.get(i)).prevHash.equals(((Block)chain.get(i-1)).hash)) return false;
+    }
+    return true;
+  }
+  
+  void draw(float x, float y) {
+    fill(200);
+    text("Blocks in Chain: " + chain.size(), x, y);
+    for(int i=0; i<chain.size(); i++) {
+      rect(x + (i*60), y + 20, 50, 50);
+    }
+  }
+}
+
+// --- UI Components ---
+class DifficultySlider {
+  float x, y, w, h;
+  int val = 1;
+  DifficultySlider(float x, float y, float w, float h) { this.x=x; this.y=y; this.w=w; this.h=h; }
+  void draw() { fill(100); rect(x, y, w, h); fill(255, 0, 0); rect(x, y, (val/5.0)*w, h); }
+  void update(float mx) { val = int(map(mx, x, x+w, 1, 5)); }
+  boolean hit(float px, float py) { return px > x && px < x+w && py > y && py < y+h; }
+}
+
+class TextBox {
+  float x, y, w, h;
+  String label, text = "";
+  boolean active = false;
+  TextBox(float x, float y, float w, float h, String l, String d) { this.x=x; this.y=y; this.w=w; this.h=h; this.label=l; this.text=d; }
+  void draw() { fill(active ? 150 : 80); rect(x, y, w, h); fill(255); text(label + ": " + text, x+10, y+30); }
+  void toggle() { active = !active; }
+  void append(char c) { if (c == BACKSPACE && text.length() > 0) text = text.substring(0, text.length()-1); else if (c >= ' ' && c <= '~') text += c; }
+  boolean hit(float px, float py) { return px > x && px < x+w && py > y && py < y+h; }
+}
+
+class Button {
+  float x, y, w, h; String l;
+  Button(float x, float y, float w, float h, String l) { this.x=x; this.y=y; this.w=w; this.h=h; this.l=l; }
+  void draw() { fill(60); rect(x, y, w, h); fill(255); textAlign(CENTER, CENTER); text(l, x+w/2, y+h/2); textAlign(LEFT, BASELINE); }
+  boolean hit(float px, float py) { return px > x && px < x+w && py > y && py < y+h; }
+}
