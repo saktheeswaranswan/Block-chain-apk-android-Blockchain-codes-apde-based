@@ -1,0 +1,854 @@
+import java.security.MessageDigest;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.ArrayList;
+
+// ====================== GLOBAL STATE ======================
+ArrayList<Node> network = new ArrayList<Node>();
+Node minerNode, aliceNode, bobNode, charlieNode;
+Node inspectedNode; 
+
+DifficultySlider diffSlider;
+
+Button btnAliceToBob, btnBobToCharlie, btnCharlieToAlice;
+Button mineBtn, validateBtn, consensusBtn, resetBtn;
+
+String statusMsg = "Ready";
+boolean isMining = false;
+boolean isConsensusSyncing = false; 
+boolean isCurrentlyValidating = false; 
+
+// Steps trackers for animated async loops
+int activeValidationStep = -1;  
+int activeConsensusStep = -1;   
+
+// Step results arrays (0=Pending, 1=Checking/Blinking, 2=Passed, 3=Failed)
+int[] validationStatuses = new int[4];
+int[] consensusStatuses = new int[4];
+
+// Timers
+long thumbsUpTimer = 0;
+long wisdomTimer = 0;
+
+// Thread-safe lists for concurrent access
+CopyOnWriteArrayList<AnimTx> floatingTxs = new CopyOnWriteArrayList<AnimTx>();
+
+// Unified Interactive Viewport Transformations (Pan & Zoom)
+float zoomScale = 1.0f;
+float panX = 0.0f;
+float panY = 0.0f;
+float dragStartX, dragStartY;
+boolean isDraggingCanvas = false;
+
+// Pinch zoom tracking variables for Android Touch Layouts
+float initialPinchDist = 0.0f;
+float initialZoomScale = 1.0f;
+
+int selectedBlockIndex = -1;
+
+// ====================== SETUP ======================
+void setup() {
+  // Utilizing full display size orientation bounds for adaptive mobile rendering
+  fullScreen();
+  orientation(LANDSCAPE);
+  
+  // Safe native font selection profile to eliminate APDE runtime crashes
+  textFont(createFont("sans-serif", 14));
+
+  // Anchor topology nodes in standard space coordinates
+  float cx = 400;
+  float cy = 200;
+  float xOffset = 220;
+  float yOffset = 75;
+
+  // Initialize Network Nodes
+  aliceNode = new Node("Alice", cx - xOffset, cy - yOffset);
+  bobNode = new Node("Bob", cx + xOffset, cy - yOffset);
+  charlieNode = new Node("Charlie", cx - xOffset, cy + yOffset);
+  minerNode = new Node("Miner", cx + xOffset, cy + yOffset);
+  
+  network.add(aliceNode);
+  network.add(bobNode);
+  network.add(charlieNode);
+  network.add(minerNode);
+
+  // Fully connected mesh wiring setup
+  for (Node n1 : network) {
+    for (Node n2 : network) {
+      if (n1 != n2) n1.peers.add(n2);
+    }
+  }
+
+  // Synchronize initial shared Genesis State Profile
+  Blockchain genesisChain = new Blockchain();
+  for (Node n : network) {
+    n.bc = genesisChain.cloneChain();
+  }
+  
+  inspectedNode = minerNode; 
+
+  // Static control widget dimensions
+  diffSlider = new DifficultySlider(50, 20, width - 100, 30);
+  diffSlider.val = 3; 
+
+  float y1 = 300; 
+  float y2 = 360; 
+  
+  btnAliceToBob = new Button(50, y1, 160, 45, "Alice -> Bob ($10)");
+  btnBobToCharlie = new Button(230, y1, 160, 45, "Bob -> Charlie ($10)");
+  btnCharlieToAlice = new Button(410, y1, 160, 45, "Charlie -> Alice ($10)");
+  
+  mineBtn = new Button(50, y2, 140, 45, "Mine Block\n(+50 Reward)");
+  validateBtn = new Button(210, y2, 140, 45, "Validate Chain\n(Step Checks)");
+  consensusBtn = new Button(370, y2, 140, 45, "Consensus Sync\n(Mesh Match)");
+  resetBtn = new Button(530, y2, 140, 45, "Reset Chain");
+}
+
+// ====================== DRAW ======================
+void draw() {
+  background(20);
+
+  // 1. RENDER INTERACTIVE TRANSFORMED WORLDSPACE (Pan & Zoom Layer)
+  pushMatrix();
+  translate(panX, panY);
+  scale(zoomScale);
+  
+  // Render mesh connections and entities inside transformation matrix
+  drawMeshTopologyPeers();
+  
+  // Render localized block ledger track
+  inspectedNode.bc.drawLinearGraph(50, 500); 
+  
+  // Render active validation tables and consensus engine metrics inside matrix
+  drawLiveChecklistPanel(50, 650);
+  
+  // Render flying data validation particles
+  for (AnimTx atx : floatingTxs) {
+    atx.update();
+    atx.draw();
+  }
+  popMatrix();
+  
+  // 2. RENDER FIXED HUD OVERLAYS (Static Control HUD Spaces)
+  fill(30, 30, 40, 240);
+  rect(0, 0, width, 140);
+  rect(0, 280, width, 140);
+  
+  diffSlider.draw();
+  btnAliceToBob.draw();
+  btnBobToCharlie.draw();
+  btnCharlieToAlice.draw();
+  mineBtn.draw();
+  validateBtn.draw();
+  consensusBtn.draw();
+  resetBtn.draw();
+  
+  drawStaticHUD();
+  drawBlockInspector();
+}
+
+// ====================== MESH TOPOLOGY PEERS ======================
+void drawMeshTopologyPeers() {
+  fill(255);
+  textSize(16);
+  text("Network Nodes Topology Mesh:", 50, -30);
+  
+  stroke(100, 150, 255, 120);
+  strokeWeight(2 / zoomScale);
+  for (int i = 0; i < network.size(); i++) {
+    for (int j = i + 1; j < network.size(); j++) {
+      line(network.get(i).x, network.get(i).y, network.get(j).x, network.get(j).y);
+    }
+  }
+  noStroke();
+  
+  for (Node n : network) {
+    drawPeerBox(n);
+  }
+  textAlign(LEFT, BASELINE);
+}
+
+void drawPeerBox(Node n) {
+  float w = 140;
+  float h = 55;
+  
+  if (inspectedNode == n) {
+    stroke(255, 255, 0);
+    strokeWeight(3 / zoomScale);
+  } else {
+    stroke(100);
+    strokeWeight(1 / zoomScale);
+  }
+  
+  fill(35, 35, 45);
+  rect(n.x - w/2, n.y - h/2, w, h, 8);
+  noStroke();
+  
+  fill(200, 200, 255);
+  textAlign(CENTER, CENTER);
+  textSize(14);
+  text(n.name, n.x, n.y - 10);
+  
+  fill(100, 255, 100);
+  text("$" + n.bc.getBalance(n.name), n.x, n.y + 12);
+}
+
+// ====================== STATIC COGNITIVE HUD PANEL ======================
+void drawStaticHUD() {
+  fill(255);
+  textSize(15);
+  
+  if (isMining) fill(255, 200, 50); 
+  else if (isConsensusSyncing) fill(100, 200, 255); 
+  else if (statusMsg.contains("failed") || statusMsg.contains("WARNING") || statusMsg.contains("FAILED")) fill(255, 80, 80);
+  else if (statusMsg.contains("Successful") || statusMsg.contains("sound") || statusMsg.contains("Complete")) fill(100, 255, 100);
+  
+  text("System Log Status: " + statusMsg, 50, height - 55);
+  
+  fill(190);
+  textSize(13);
+  text("Active Target View Node: " + inspectedNode.name + " | Computational Blocks Total: " + inspectedNode.bc.chain.size() + " | [Drag to Pan | Pinch 2 Fingers to Zoom]", 50, height - 30);
+  
+  textSize(36);
+  if (millis() < thumbsUpTimer) text("👍", width - 65, 195);
+  if (millis() < wisdomTimer) text("🧠", width - 120, 195);
+  textSize(14); 
+}
+
+// ====================== ZOOMABLE SYSTEM METRICS PANEL ======================
+void drawLiveChecklistPanel(float x, float y) {
+  float panelW = 460;
+  float panelH = 210;
+
+  fill(25, 30, 40, 230);
+  stroke(100, 200, 150, 150);
+  strokeWeight(2 / zoomScale);
+  rect(x, y, panelW, panelH, 10);
+  noStroke();
+
+  fill(255);
+  textSize(14);
+  text("System Evaluation Verification Metrics Matrix", x + 15, y + 25);
+  
+  // Section A: Cryptographic Engine Rules
+  float currY = y + 55;
+  fill(130, 170, 230);
+  textSize(12);
+  text("LEDGER VALIDATION (Target Node Node: " + inspectedNode.name + ")", x + 15, currY);
+  text("CONSENSUS ALGORITHMIC EVALUATION RULES", x + 245, currY);
+  
+  String[] valLabels = {
+    "Genesis Core Data Integrity",
+    "Block Mutation Tamper Scan",
+    "Backward Hash Chain Linkage",
+    "PoW Target Zero Compliance"
+  };
+
+  String[] conLabels = {
+    "Global Ledger Validation",
+    "Absolute Longest Chain Find",
+    "Sync Target Selection Matrix",
+    "Mesh State Sync Propagation"
+  };
+
+  for (int i = 0; i < 4; i++) {
+    currY += 32;
+    renderMetricRow(x + 15, currY, valLabels[i], validationStatuses[i]);
+    renderMetricRow(x + 245, currY, conLabels[i], consensusStatuses[i]);
+  }
+}
+
+void renderMetricRow(float x, float y, String label, int status) {
+  boolean blinkState = (frameCount % 16 < 8);
+  textSize(11);
+  
+  if (status == 0) {
+    fill(110);
+    text("[ ]  " + label, x, y);
+  } else if (status == 1) {
+    if (blinkState) fill(255, 230, 50); else fill(60, 45, 10);
+    text("[*]  " + label + "...", x, y);
+  } else if (status == 2) {
+    fill(80, 255, 80);
+    text("[✓]  " + label, x, y);
+  } else if (status == 3) {
+    fill(255, 80, 80);
+    text("[X]  " + label, x, y);
+  }
+}
+
+// ====================== BLOCK INSPECTOR OVERLAY ======================
+void drawBlockInspector() {
+  if (selectedBlockIndex == -1) return; 
+
+  float panelW = 340;
+  float panelH = 430;
+  float panelX = width - panelW - 40; 
+  float panelY = 320;
+
+  fill(20, 25, 35, 250);
+  stroke(100, 150, 255);
+  strokeWeight(2);
+  rect(panelX, panelY, panelW, panelH, 10);
+  noStroke();
+
+  fill(255);
+  textSize(15);
+  float txYStart = panelY + 185;
+
+  if (selectedBlockIndex == inspectedNode.bc.chain.size()) {
+    text("Inspect: " + inspectedNode.name + "'s Mempool", panelX + 15, panelY + 25);
+    textSize(13);
+    fill(170);
+    
+    if (isMining && inspectedNode == minerNode) {
+      fill(255, 200, 50);
+      text("Status: Mining block operations ongoing...", panelX + 15, panelY + 50);
+    } else {
+      text("Status: Idle. Waiting for transactional inputs.", panelX + 15, panelY + 50);
+    }
+    
+    fill(255);
+    text("Transactions Queue (" + inspectedNode.bc.pending.size() + "):", panelX + 15, panelY + 80);
+    fill(210, 210, 110);
+    for(int t = 0; t < min(inspectedNode.bc.pending.size(), 14); t++) {
+      text(inspectedNode.bc.pending.get(t).toString(), panelX + 15, panelY + 105 + (t * 22));
+    }
+  } else {
+    if (selectedBlockIndex >= inspectedNode.bc.chain.size()) { selectedBlockIndex = -1; return; }
+    Block b = inspectedNode.bc.chain.get(selectedBlockIndex);
+    text("Inspect: Data Block #" + selectedBlockIndex, panelX + 15, panelY + 25);
+    
+    textSize(13);
+    fill(170);
+    text("Difficulty Level: " + b.difficulty, panelX + 15, panelY + 50);
+    text("Nonce Value: " + b.nonce, panelX + 15, panelY + 70);
+    text("Mining Proof Time: " + b.miningTimeMs + " ms", panelX + 15, panelY + 90);
+    
+    fill(140, 190, 255);
+    text("Prev:", panelX + 15, panelY + 120);
+    text(b.prevHash.substring(0, min(32, b.prevHash.length())) + "...", panelX + 60, panelY + 120);
+    
+    fill(255, 190, 140);
+    text("Hash:", panelX + 15, panelY + 140);
+    text(b.hash.substring(0, min(32, b.hash.length())) + "...", panelX + 60, panelY + 140);
+    
+    fill(255);
+    text("Payload Transactions (" + b.transactions.size() + "):", panelX + 15, panelY + 175);
+    for(int t = 0; t < min(b.transactions.size(), 10); t++) {
+      Transaction tx = b.transactions.get(t);
+      if (tx.isCoinbase) fill(255, 215, 0); else fill(210, 210, 100);
+      text(tx.toString(), panelX + 15, txYStart + (t * 22));
+    }
+  }
+}
+
+// ====================== ANDROID TOUCH EVENTS PIPELINES ======================
+void touchStarted() {
+  // Catch Multi-Touch Zoom actions
+  if (touches.length == 2) {
+    isDraggingCanvas = false;
+    initialPinchDist = dist(touches[0].x, touches[0].y, touches[1].x, touches[1].y);
+    initialZoomScale = zoomScale;
+    return;
+  }
+
+  float tX = mouseX;
+  float tY = mouseY;
+
+  // 1. Core UI Interceptors (Evaluated in absolute static pixel bounds)
+  if (diffSlider.hit(tX, tY)) { diffSlider.update(tX); return; }
+  
+  if (isMining || isConsensusSyncing || activeValidationStep != -1) return; 
+
+  if (isCurrentlyValidating && !validateBtn.hit(tX, tY) && !consensusBtn.hit(tX, tY)) {
+    isCurrentlyValidating = false;
+    for(int i=0; i<4; i++) validationStatuses[i] = 0;
+    statusMsg = "Ready";
+  }
+
+  if (btnAliceToBob.hit(tX, tY)) { gossipTx("Alice", "Bob", 10.0f); return; }
+  if (btnBobToCharlie.hit(tX, tY)) { gossipTx("Bob", "Charlie", 10.0f); return; }
+  if (btnCharlieToAlice.hit(tX, tY)) { gossipTx("Charlie", "Alice", 10.0f); return; }
+  
+  if (mineBtn.hit(tX, tY)) { startMining(); return; }
+  if (validateBtn.hit(tX, tY)) { startAnimatedValidation(); return; }
+  if (consensusBtn.hit(tX, tY)) { startConsensus(); return; }
+  if (resetBtn.hit(tX, tY)) { resetChain(); return; }
+  
+  // 2. Transformed Inverse Raycasting for Transformed Matrix Entities
+  float transMouseX = (tX - panX) / zoomScale;
+  float transMouseY = (tY - panY) / zoomScale;
+
+  // Node selection evaluation paths
+  for (Node n : network) {
+    if (transMouseX >= n.x - 70 && transMouseX <= n.x + 70 && transMouseY >= n.y - 27 && transMouseY <= n.y + 27) {
+      inspectedNode = n;
+      selectedBlockIndex = -1; 
+      for(int i=0; i<4; i++) validationStatuses[i] = 0;
+      isCurrentlyValidating = false;
+      return;
+    }
+  }
+  
+  // Blockchain chain track selections inside matrix space
+  float blockW = 70, blockH = 70, spacing = 150, startX = 50, startY = 500; 
+  boolean clickedBlockObj = false;
+  
+  for (int i = 0; i < inspectedNode.bc.chain.size(); i++) {
+    float bx = startX + i * spacing;
+    float by = startY - blockH/2;
+    if (transMouseX >= bx && transMouseX <= bx + blockW && transMouseY >= by && transMouseY <= by + blockH) {
+      selectedBlockIndex = i;
+      clickedBlockObj = true;
+      break;
+    }
+  }
+  
+  float px = startX + inspectedNode.bc.chain.size() * spacing;
+  float py = startY - blockH/2;
+  if (!clickedBlockObj && transMouseX >= px && transMouseX <= px + blockW && transMouseY >= py && transMouseY <= py + blockH) {
+    selectedBlockIndex = inspectedNode.bc.chain.size();
+    clickedBlockObj = true;
+  }
+  
+  // Clear block inspector contextually if clicking structural background empty regions
+  if (!clickedBlockObj && tY > 420) {
+    selectedBlockIndex = -1;
+  }
+
+  // 3. Fallback Canvas Pan Drag Trigger Initiation
+  if (!clickedBlockObj && touches.length == 1) {
+    isDraggingCanvas = true;
+    dragStartX = tX - panX;
+    dragStartY = tY - panY;
+  }
+}
+
+void touchMoved() {
+  // Execute Pinch Zoom scaling calculations over Android touch configurations
+  if (touches.length == 2 && initialPinchDist > 0) {
+    float currentPinchDist = dist(touches[0].x, touches[0].y, touches[1].x, touches[1].y);
+    float factor = currentPinchDist / initialPinchDist;
+    
+    float midX = (touches[0].x + touches[1].x) / 2.0f;
+    float midY = (touches[0].y + touches[1].y) / 2.0f;
+    
+    float nextZoom = constrain(initialZoomScale * factor, 0.4f, 2.5f);
+    
+    panX = midX - (midX - panX) * (nextZoom / zoomScale);
+    panY = midY - (midY - panY) * (nextZoom / zoomScale);
+    zoomScale = nextZoom;
+    return;
+  }
+
+  if (isDraggingCanvas && touches.length == 1) {
+    panX = mouseX - dragStartX;
+    panY = mouseY - dragStartY;
+  }
+}
+
+void touchEnded() {
+  isDraggingCanvas = false;
+  if (touches.length < 2) {
+    initialPinchDist = 0;
+  }
+}
+
+// ====================== ACTIONS & CORE BACKGROUND PIPELINES ======================
+void gossipTx(String s, String r, float a) {
+  for (Node n : network) {
+    n.bc.pending.add(new Transaction(s, r, a, false));
+  }
+  statusMsg = "Network gossip dispatched: " + s + " -> " + r + " ($" + a + ")";
+}
+
+void startMining() {
+  isMining = true;
+  isCurrentlyValidating = false;
+  for(int i=0; i<4; i++) { validationStatuses[i] = 0; consensusStatuses[i] = 0; }
+  statusMsg = "Miner hashing: Localizing secure proof-of-work puzzle answers...";
+  inspectedNode = minerNode; 
+  thread("runMinerThread"); 
+}
+
+void runMinerThread() {
+  minerNode.bc.mine(diffSlider.val, "Miner");
+  isMining = false;
+  statusMsg = "Block Mined successfully! Node states are out of sync. Execute Consensus Sync.";
+}
+
+void startAnimatedValidation() {
+  isCurrentlyValidating = true;
+  for(int i=0; i<4; i++) { validationStatuses[i] = 0; consensusStatuses[i] = 0; }
+  thread("runValidationThread");
+}
+
+void runValidationThread() {
+  statusMsg = "Initializing comprehensive structural node ledger analysis...";
+  Blockchain targetBC = inspectedNode.bc;
+  
+  // --- RULE 0: Genesis Authenticity Verification ---
+  validationStatuses[0] = 1; 
+  delay(800); 
+  if (targetBC.chain.size() > 0 && !targetBC.chain.get(0).hash.equals(targetBC.chain.get(0).calculateHash())) {
+    validationStatuses[0] = 3;
+    statusMsg = "CRITICAL FAIL: Genesis Block content manipulation discovered.";
+    return;
+  }
+  validationStatuses[0] = 2;
+
+  // --- RULE 1: Block Data Mutation Scan ---
+  validationStatuses[1] = 1;
+  delay(800);
+  for (int i = 1; i < targetBC.chain.size(); i++) {
+    if (!targetBC.chain.get(i).hash.equals(targetBC.chain.get(i).calculateHash())) {
+      validationStatuses[1] = 3;
+      statusMsg = "CRITICAL FAIL: Hash collision discrepancy found at Block #" + i;
+      return;
+    }
+  }
+  validationStatuses[1] = 2;
+
+  // --- RULE 2: Backward Pointer Chain Linkage ---
+  validationStatuses[2] = 1;
+  delay(800);
+  for (int i = 1; i < targetBC.chain.size(); i++) {
+    if (!targetBC.chain.get(i).prevHash.equals(targetBC.chain.get(i - 1).hash)) {
+      validationStatuses[2] = 3;
+      statusMsg = "CRITICAL FAIL: Broken cryptographic pointer connection link at Block #" + i;
+      return;
+    }
+  }
+  validationStatuses[2] = 2;
+
+  // --- RULE 3: PoW Target Zero Compliance ---
+  validationStatuses[3] = 1;
+  delay(800);
+  String targetPrefix = new String(new char[diffSlider.val]).replace('\0', '0');
+  for (int i = 1; i < targetBC.chain.size(); i++) {
+    if (!targetBC.chain.get(i).hash.substring(0, min(diffSlider.val, targetBC.chain.get(i).hash.length())).equals(targetPrefix)) {
+      validationStatuses[3] = 3;
+      statusMsg = "CRITICAL FAIL: Block #" + i + " violates target protocol difficulty requirements.";
+      return;
+    }
+  }
+  validationStatuses[3] = 2;
+  
+  statusMsg = "Validation Passed: " + inspectedNode.name + "'s ledger metrics are fully secure.";
+  thumbsUpTimer = millis() + 2500;
+}
+
+void startConsensus() {
+  isConsensusSyncing = true;
+  isCurrentlyValidating = false;
+  for(int i=0; i<4; i++) { validationStatuses[i] = 0; consensusStatuses[i] = 0; }
+  thread("runConsensusThread");
+}
+
+void runConsensusThread() {
+  statusMsg = "Evaluating mesh topology consensus rules models...";
+  
+  // --- RULE 0: Topology Ledger Auditing ---
+  consensusStatuses[0] = 1;
+  delay(800);
+  boolean globalValid = true;
+  for (Node node : network) {
+    if (!node.bc.isValid()) globalValid = false;
+  }
+  consensusStatuses[0] = globalValid ? 2 : 3;
+
+  // --- RULE 1: Highest Chain Discovery Profile ---
+  consensusStatuses[1] = 1;
+  delay(800);
+  Node absoluteWinner = null;
+  int maxLength = 0;
+  for (Node node : network) {
+    if (node.bc.isValid() && node.bc.chain.size() > maxLength) {
+      maxLength = node.bc.chain.size();
+      absoluteWinner = node;
+    }
+  }
+  consensusStatuses[1] = (absoluteWinner != null) ? 2 : 3;
+
+  // --- RULE 2: Target Synchronization Allocation Matrix ---
+  consensusStatuses[2] = 1;
+  delay(800);
+  boolean networkChanged = false;
+  if (absoluteWinner != null) {
+    for (Node node : network) {
+      if (node != absoluteWinner && absoluteWinner.bc.chain.size() > node.bc.chain.size()) {
+        node.bc = absoluteWinner.bc.cloneChain();
+        networkChanged = true;
+      }
+    }
+  }
+  consensusStatuses[2] = 2;
+
+  // --- RULE 3: Mesh State Block Dispatches Propagation ---
+  consensusStatuses[3] = 1;
+  if (networkChanged && absoluteWinner != null) {
+    statusMsg = "Consensus Reached! Emitting synchronized block updates out from " + absoluteWinner.name + "...";
+    floatingTxs.clear();
+    
+    Block latestBlock = absoluteWinner.bc.chain.get(absoluteWinner.bc.chain.size() - 1);
+    for (Transaction tx : latestBlock.transactions) {
+      String txText = tx.toString();
+      for (Node node : network) {
+        if (node != absoluteWinner) {
+          floatingTxs.add(new AnimTx(txText, absoluteWinner.x, absoluteWinner.y, node.x, node.y));
+          delay(60); 
+        }
+      }
+    }
+    delay(1400); 
+    consensusStatuses[3] = 2;
+    statusMsg = "Consensus Completed: Network convergence matched to the longest execution trace.";
+    thumbsUpTimer = millis() + 4000;
+    wisdomTimer = millis() + 4000;
+  } else {
+    consensusStatuses[3] = 2;
+    statusMsg = "Consensus Completed: Mesh records match completely. No catch-up actions needed.";
+    delay(1000);
+  }
+  
+  isConsensusSyncing = false; 
+  floatingTxs.clear();
+}
+
+void resetChain() {
+  Blockchain genesisChain = new Blockchain();
+  for (Node n : network) {
+    n.bc = genesisChain.cloneChain();
+  }
+  for(int i=0; i<4; i++) { validationStatuses[i] = 0; consensusStatuses[i] = 0; }
+  statusMsg = "Blockchain reset executed. Fresh genesis fields built across topology.";
+  selectedBlockIndex = -1;
+  isCurrentlyValidating = false;
+  zoomScale = 1.0f;
+  panX = 0;
+  panY = 0;
+}
+
+// ====================== CORE CRYPTOGRAPHIC STRUCTURAL ENTITIES ======================
+class Node {
+  String name;
+  float x, y;
+  Blockchain bc;
+  ArrayList<Node> peers = new ArrayList<Node>();
+  
+  Node(String n, float xLoc, float yLoc) {
+    name = n; x = xLoc; y = yLoc;
+  }
+}
+
+class AnimTx {
+  String text;
+  float x, y, targetX, targetY, speed;
+  AnimTx(String t, float startX, float startY, float destX, float destY) {
+    text = t; x = startX; y = startY; targetX = destX; targetY = destY;
+    speed = random(0.03, 0.06); 
+  }
+  void update() { x = lerp(x, targetX, speed); y = lerp(y, targetY, speed); }
+  void draw() {
+    fill(130, 255, 160, 240);
+    textSize(11); 
+    textAlign(CENTER, CENTER);
+    text(text, x, y);
+    textAlign(LEFT, BASELINE);
+  }
+}
+
+class Transaction {
+  String sender, recipient;
+  float amount;
+  boolean isCoinbase;
+
+  Transaction(String s, String r, float a, boolean coinbase) {
+    sender = s; recipient = r; amount = a; isCoinbase = coinbase;
+  }
+  String toString() {
+    if (isCoinbase) return "REWARD -> " + recipient + " : $" + amount;
+    return sender + " -> " + recipient + " : $" + amount;
+  }
+}
+
+class Block {
+  int nonce = 0;
+  int difficulty;
+  CopyOnWriteArrayList<Transaction> transactions;
+  String prevHash;
+  String hash;
+  long miningTimeMs;
+
+  Block(CopyOnWriteArrayList<Transaction> txs, String prev, int diff) {
+    transactions = new CopyOnWriteArrayList<Transaction>(txs);
+    prevHash = prev;
+    difficulty = diff;
+    long start = millis();
+    hash = mineBlock();
+    miningTimeMs = millis() - start;
+  }
+
+  String calculateHash() {
+    try {
+      String data = prevHash + nonce + transactions.toString();
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] digest = md.digest(data.getBytes("UTF-8"));
+      StringBuilder sb = new StringBuilder();
+      for (byte b : digest) sb.append(String.format("%02x", b));
+      return sb.toString();
+    } catch (Exception e) { return "ERROR"; }
+  }
+
+  String mineBlock() {
+    String target = new String(new char[difficulty]).replace('\0', '0');
+    String h = calculateHash();
+    while (!h.substring(0, difficulty).equals(target)) {
+      nonce++;
+      h = calculateHash();
+    }
+    return h;
+  }
+}
+
+class Blockchain {
+  CopyOnWriteArrayList<Block> chain = new CopyOnWriteArrayList<Block>();
+  CopyOnWriteArrayList<Transaction> pending = new CopyOnWriteArrayList<Transaction>();
+
+  Blockchain() {
+    CopyOnWriteArrayList<Transaction> genesisTxs = new CopyOnWriteArrayList<Transaction>();
+    genesisTxs.add(new Transaction("Network", "Alice", 100.0f, true));
+    genesisTxs.add(new Transaction("Network", "Bob", 100.0f, true));
+    genesisTxs.add(new Transaction("Network", "Charlie", 100.0f, true));
+    chain.add(new Block(genesisTxs, "0", 1)); 
+  }
+  
+  Blockchain cloneChain() {
+    Blockchain clone = new Blockchain();
+    clone.chain.clear();
+    for (Block b : this.chain) clone.chain.add(b);
+    clone.pending.clear();
+    for (Transaction tx : this.pending) clone.pending.add(tx);
+    return clone;
+  }
+
+  void mine(int diff, String minerAddress) {
+    CopyOnWriteArrayList<Transaction> blockTxs = new CopyOnWriteArrayList<Transaction>();
+    blockTxs.add(new Transaction("Network", minerAddress, 50.0f, true));
+    blockTxs.addAll(pending);
+    chain.add(new Block(blockTxs, chain.get(chain.size()-1).hash, diff));
+    pending.clear();
+  }
+
+  float getBalance(String user) {
+    float balance = 0;
+    for (Block b : chain) {
+      for (Transaction tx : b.transactions) {
+        if (tx.sender.equals(user)) balance -= tx.amount;
+        if (tx.recipient.equals(user)) balance += tx.amount;
+      }
+    }
+    for (Transaction tx : pending) {
+      if (tx.sender.equals(user)) balance -= tx.amount;
+    }
+    return balance;
+  }
+  
+  boolean isValid() {
+    if (chain.size() > 0) {
+      Block genesis = chain.get(0);
+      if (!genesis.hash.equals(genesis.calculateHash())) return false;
+    }
+    for (int i = 1; i < chain.size(); i++) {
+      Block currentBlock = chain.get(i);
+      Block previousBlock = chain.get(i - 1);
+      if (!currentBlock.hash.equals(currentBlock.calculateHash())) return false;
+      if (!currentBlock.prevHash.equals(previousBlock.hash)) return false;
+      String target = new String(new char[currentBlock.difficulty]).replace('\0', '0');
+      if (!currentBlock.hash.substring(0, min(currentBlock.difficulty, currentBlock.hash.length())).equals(target)) return false;
+    }
+    return true;
+  }
+
+  void drawLinearGraph(float x, float y) {
+    float spacing = 150, blockW = 70, blockH = 70;
+
+    strokeWeight(3 / zoomScale);
+    stroke(100, 150, 255); 
+    for (int i = 0; i < chain.size() - 1; i++) {
+      float bx1 = x + i * spacing, bx2 = x + (i + 1) * spacing;
+      line(bx1 + blockW, y, bx2, y); 
+    }
+    
+    if(chain.size() > 0) {
+      float bxLast = x + (chain.size() - 1) * spacing, px = x + chain.size() * spacing;
+      stroke(100, 150, 255, 120); 
+      line(bxLast + blockW, y, px, y);
+    }
+    noStroke();
+
+    for (int i = 0; i < chain.size(); i++) {
+      float bx = x + i * spacing, by = y - blockH/2;
+      if (i == selectedBlockIndex) { stroke(255, 255, 0); strokeWeight(3 / zoomScale); } 
+      else { stroke(50, 200, 50); strokeWeight(2 / zoomScale); }
+      
+      fill(40); rect(bx, by, blockW, blockH, 10); noStroke();
+      fill(255); textAlign(CENTER, CENTER);
+      if (i == 0) text("B0\n(Gen)", bx + blockW/2, by + blockH/2);
+      else text("B" + i, bx + blockW/2, by + blockH/2);
+      textAlign(LEFT, BASELINE);
+    }
+    
+    float px = x + chain.size() * spacing, py = y - blockH/2;
+    if (selectedBlockIndex == chain.size()) { stroke(255, 255, 0); strokeWeight(3 / zoomScale); } 
+    else if (isMining && inspectedNode == minerNode) { stroke(255, 150, 0, 150 + (sin(frameCount * 0.2) * 105)); strokeWeight(2 / zoomScale); } 
+    else { stroke(100); strokeWeight(2 / zoomScale); }
+    
+    fill(30); rect(px, py, blockW, blockH, 10); noStroke();
+    fill(200); textAlign(CENTER, CENTER);
+    text("Pool\n(" + pending.size() + ")", px + blockW/2, py + blockH/2);
+    textAlign(LEFT, BASELINE);
+  }
+}
+
+// ====================== CONTROLLER WIDGET ARCHITECTURES ======================
+class DifficultySlider {
+  float x, y, w, h;
+  int val = 3; 
+  DifficultySlider(float x, float y, float w, float h) { this.x=x; this.y=y; this.w=w; this.h=h; }
+  void draw() {
+    fill(45); rect(x, y, w, h, 5);
+    fill(220, 80, 80); rect(x, y, map(val, 1, 5, 0, w), h, 5);
+    fill(255); text("Network Mining Target Difficulty: " + val + " (Max difficulty rule capped at 5)", x + 15, y + 20);
+  }
+  void update(float mx) { val = (int)map(mx, x, x+w, 1, 5); val = constrain(val, 1, 5); }
+  boolean hit(float px, float py) { return px>x && px<x+w && py>y && py<y+h; }
+}
+
+class Button {
+  float x,y,w,h;
+  String label;
+  color baseColor;
+  Button(float x,float y,float w,float h,String l){
+    this.x=x; this.y=y; this.w=w; this.h=h; label=l;
+    if (l.contains("Mine")) baseColor = color(180, 120, 40);
+    else if (l.contains("Step")) baseColor = color(50, 180, 120);
+    else if (l.contains("Mesh")) baseColor = color(120, 50, 180);
+    else if (l.contains("Reset")) baseColor = color(180, 50, 50);
+    else baseColor = color(50, 120, 180);
+  }
+  void draw() {
+    if (isMining || isConsensusSyncing || activeValidationStep != -1) {
+      fill(45);
+    } else if (label.contains("Step") && isCurrentlyValidating) {
+      fill(red(baseColor) + 40, green(baseColor) + 40, blue(baseColor) + 20);
+    } else if (hit(mouseX, mouseY)) {
+      fill(red(baseColor)+30, green(baseColor)+30, blue(baseColor)+30);
+    } else {
+      fill(baseColor);
+    }
+    rect(x,y,w,h, 5);
+    fill(255); textAlign(CENTER,CENTER); text(label, x+w/2, y+h/2 - 2); textAlign(LEFT,BASELINE);
+  }
+  boolean hit(float px,float py){ return px>x && px<x+w && py>y && py<y+h; }
+}
