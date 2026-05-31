@@ -1,0 +1,96 @@
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Date;
+
+ArrayList<Block> blockchain = new ArrayList<Block>();
+
+void setup() {
+  size(700, 800);
+  
+  // Genesis Block
+  blockchain.add(new Block(0, "Admin", "Genesis", "N/A", "0"));
+  
+  // Sample data
+  addGrievance("Puja", "Street lights not working.");
+  addGrievance("Mayank", "Water supply disrupted.");
+  addGrievance("Puja", "Fixed by team.", "Resolved");
+  
+  println("Blockchain initialized.");
+}
+
+void draw() {
+  background(20);
+  fill(255);
+  textSize(12);
+
+  text("🔗 SIMPLE BLOCKCHAIN GRIEVANCE SYSTEM", 20, 30);
+
+  int y = 60;
+
+  for (Block b : blockchain) {
+    fill(200);
+    text("Block #" + b.index, 20, y);
+    text("Citizen: " + b.citizen, 20, y + 15);
+    text("Complaint: " + b.complaint, 20, y + 30);
+    text("Status: " + b.resolution, 20, y + 45);
+
+    fill(0, 255, 150);
+    text("Prev Hash: " + b.prevHash, 20, y + 60);
+
+    fill(255, 180, 0);
+    text("Hash (SHA-256):", 20, y + 75);
+
+    fill(255);
+    text(b.hash, 20, y + 90);
+
+    y += 130;
+  }
+}
+
+// Overloaded methods
+void addGrievance(String name, String complaint) {
+  addGrievance(name, complaint, "Pending");
+}
+
+void addGrievance(String name, String complaint, String resolution) {
+  Block last = blockchain.get(blockchain.size() - 1);
+  blockchain.add(new Block(blockchain.size(), name, complaint, resolution, last.hash));
+}
+
+// BLOCK CLASS
+class Block {
+  int index;
+  String timestamp, citizen, complaint, resolution, prevHash, hash;
+
+  Block(int index, String citizen, String complaint, String resolution, String prevHash) {
+    this.index = index;
+    this.timestamp = new Date().toString();
+    this.citizen = citizen;
+    this.complaint = complaint;
+    this.resolution = resolution;
+    this.prevHash = prevHash;
+    this.hash = calculateHash();
+  }
+
+  String calculateHash() {
+    String data = index + timestamp + citizen + complaint + resolution + prevHash;
+
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hashBytes = digest.digest(data.getBytes("UTF-8"));
+
+      StringBuilder hexString = new StringBuilder();
+
+      for (byte b : hashBytes) {
+        String hex = Integer.toHexString(0xff & b);
+        if (hex.length() == 1) hexString.append('0');
+        hexString.append(hex);
+      }
+
+      return hexString.toString();
+
+    } catch (Exception e) {
+      return "hash_error";
+    }
+  }
+}
