@@ -1,0 +1,1047 @@
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Date;
+import processing.data.JSONArray;
+import processing.data.JSONObject;
+import processing.event.MouseEvent;
+
+ArrayList<Block> blockchain = new ArrayList<Block>();
+ArrayList<Node> nodes = new ArrayList<Node>();
+
+final int DIFFICULTY = 3;
+final int MINING_STEPS_PER_FRAME = 2500;
+
+// Window size
+final int APP_W = 1000;
+final int APP_H = 900;
+
+// Virtual canvas size
+final int CANVAS_W = 1290;
+final int CANVAS_H = 1100;
+
+// Scrollbars
+final int SCROLLBAR_THICK = 14;
+boolean draggingHScroll = false;
+boolean draggingVScroll = false;
+boolean shiftHeld = false;
+
+// Layout
+final int TOPBAR_H = 70;
+final int NODE_PANEL_H = 80;
+final int MARGIN = 20;
+final int GAP = 10;
+
+int selectedIndex = -1;
+int activeField = 0;
+
+String editCitizen = "";
+String editComplaint = "";
+String editResolution = "";
+
+boolean miningActive = false;
+int miningIndex = 0;
+long miningAttempts = 0;
+
+boolean hackerMode = false;
+int nextHackFrame = 0;
+
+String statusMsg = "Ready.";
+String saveFileName = "blockchain.json";
+
+// Chain viewport
+int chainX = 20;
+int chainY = 90;
+int chainW = 560;
+int chainCardH = 96;
+int chainGap = 10;
+int chainScrollIndex = 0;
+
+// Right panel
+int panelX = 610;
+int panelY = 90;
+int panelW = 370;
+int panelH = 305;
+
+int fieldX = 630;
+int fieldW = 330;
+int fieldH = 34;
+
+int btnX1 = 630;
+int btnX2 = 785;
+int btnW = 145;
+int btnH = 32;
+
+// Extra panels to make the canvas truly scrollable
+int sideInfoX = 1010;
+int sideInfoY = 90;
+int sideInfoW = 250;
+int sideInfoH = 305;
+
+int footerPanelX = 20;
+int footerPanelY = 930;
+int footerPanelW = 1250;
+int footerPanelH = 140;
+
+// View offsets
+int viewX = 0;
+int viewY = 0;
+
+// World mouse (screen mouse translated by scroll)
+int worldMouseX = 0;
+int worldMouseY = 0;
+
+void settings() {
+  size(APP_W, APP_H);
+}
+
+void setup() {
+  frameRate(30);
+  textFont(createFont("Arial", 14));
+
+  blockchain.add(new Block(0, "Admin", "Genesis Block", "N/A", "0"));
+
+  addGrievance("Puja", "Street lights not working.");
+  addGrievance("Mayank", "Water supply disrupted.");
+  addGrievance("Puja", "Fixed by team.", "Resolved");
+
+  nodes.add(new Node("Node A"));
+  nodes.add(new Node("Node B"));
+  nodes.add(new Node("Node C"));
+  syncNodesFromMaster();
+
+  statusMsg = "Blockchain initialized.";
+  clampView();
+}
+
+void draw() {
+  background(24);
+
+  processMiningStep();
+  processHackerMode();
+
+  pushMatrix();
+  translate(-viewX, -viewY);
+
+  drawTopBar();
+  drawChainViewport();
+  drawEditorPanel();
+  drawButtons();
+  drawNodePanel();
+  drawSideInfoPanel();
+  drawFooterPanel();
+
+  popMatrix();
+
+  drawScrollbars();
+}
+
+/* ---------------- VIEW / SCROLL ---------------- */
+
+int visibleCanvasW() { 
+  return width - SCROLLBAR_THICK; 
+}
+
+int visibleCanvasH() { 
+  return height - SCROLLBAR_THICK; 
+}
+
+int maxViewX() { 
+  return max(0, CANVAS_W - visibleCanvasW()); 
+}
+
+int maxViewY() { 
+  return max(0, CANVAS_H - visibleCanvasH()); 
+}
+
+void clampView() {
+  viewX = constrain(viewX, 0, maxViewX());
+  viewY = constrain(viewY, 0, maxViewY());
+}
+
+void drawScrollbars() {
+  int vw = visibleCanvasW();
+  int vh = visibleCanvasH();
+  int maxVX = maxViewX();
+  int maxVY = maxViewY();
+
+  noStroke();
+  fill(55);
+  rect(0, height - SCROLLBAR_THICK, vw, SCROLLBAR_THICK);
+  rect(width - SCROLLBAR_THICK, 0, SCROLLBAR_THICK, vh);
+  fill(40);
+  rect(width - SCROLLBAR_THICK, height - SCROLLBAR_THICK, SCROLLBAR_THICK, SCROLLBAR_THICK);
+
+  if (maxVX > 0) {
+    float thumbW = max(40, vw * (float)vw / (float)CANVAS_W);
+    float thumbX = map(viewX, 0, maxVX, 0, vw - thumbW);
+    fill(150);
+    rect(thumbX, height - SCROLLBAR_THICK + 2, thumbW, SCROLLBAR_THICK - 4, 5);
+  } else {
+    fill(150);
+    rect(0, height - SCROLLBAR_THICK + 2, vw, SCROLLBAR_THICK - 4, 5);
+  }
+
+  if (maxVY > 0) {
+    float thumbH = max(40, vh * (float)vh / (float)CANVAS_H);
+    float thumbY = map(viewY, 0, maxVY, 0, vh - thumbH);
+    fill(150);
+    rect(width - SCROLLBAR_THICK + 2, thumbY, SCROLLBAR_THICK - 4, thumbH, 5);
+  } else {
+    fill(150);
+    rect(width - SCROLLBAR_THICK + 2, 0, SCROLLBAR_THICK - 4, vh, 5);
+  }
+}
+
+boolean hitVerticalScrollbar(int mx, int my) {
+  return mx >= width - SCROLLBAR_THICK && my >= 0 && my < height - SCROLLBAR_THICK;
+}
+
+boolean hitHorizontalScrollbar(int mx, int my) {
+  return my >= height - SCROLLBAR_THICK && mx >= 0 && mx < width - SCROLLBAR_THICK;
+}
+
+void updateViewFromVerticalMouse(int my) {
+  int vh = visibleCanvasH();
+  int maxVY = maxViewY();
+  if (maxVY <= 0) return;
+
+  float thumbH = max(40, vh * (float)vh / (float)CANVAS_H);
+  float usable = vh - thumbH;
+  float pos = constrain(my - thumbH / 2.0, 0, usable);
+  viewY = round(map(pos, 0, usable, 0, maxVY));
+  clampView();
+}
+
+void updateViewFromHorizontalMouse(int mx) {
+  int vw = visibleCanvasW();
+  int maxVX = maxViewX();
+  if (maxVX <= 0) return;
+
+  float thumbW = max(40, vw * (float)vw / (float)CANVAS_W);
+  float usable = vw - thumbW;
+  float pos = constrain(mx - thumbW / 2.0, 0, usable);
+  viewX = round(map(pos, 0, usable, 0, maxVX));
+  clampView();
+}
+
+/* ---------------- TOP BAR ---------------- */
+
+void drawTopBar() {
+  boolean valid = isChainValid();
+  String chainState = miningActive ? "MINING" : (valid ? "VALID" : "BROKEN");
+
+  fill(34);
+  noStroke();
+  rect(0, 0, width, TOPBAR_H);
+
+  fill(255);
+  textSize(20);
+  textAlign(LEFT, BASELINE);
+  text("BLOCKCHAIN GRIEVANCE SYSTEM", 20, 28);
+
+  textSize(13);
+  fill(valid ? color(120, 255, 160) : color(255, 110, 110));
+  text("Chain Status: " + chainState, 20, 52);
+
+  fill(220);
+  text(statusMsg, 170, 52);
+
+  fill(220);
+  text("View: " + viewX + ", " + viewY, 720, 52);
+
+  if (miningActive) {
+    float progress = blockchain.size() == 0 ? 1.0 : (float)miningIndex / (float)blockchain.size();
+    int barX = 720;
+    int barY = 20;
+    int barW = 250;
+    int barH = 18;
+
+    fill(70);
+    rect(barX, barY, barW, barH);
+
+    fill(255, 180, 0);
+    rect(barX, barY, barW * constrain(progress, 0, 1), barH);
+
+    fill(255);
+    text("Mining " + nf(progress * 100, 0, 1) + "%", barX, barY + 34);
+  } else {
+    int dirtyCount = countDirtyBlocks();
+    fill(220);
+    text("Dirty blocks: " + dirtyCount + "    Difficulty: " + DIFFICULTY, 720, 72);
+  }
+}
+
+/* ---------------- BLOCK CHAIN VIEWPORT ---------------- */
+
+int visibleChainCount() {
+  int viewportBottom = height - NODE_PANEL_H - MARGIN;
+  int viewportH = viewportBottom - chainY;
+  return max(1, (viewportH + chainGap) / (chainCardH + chainGap));
+}
+
+int maxScrollIndex() {
+  return max(0, blockchain.size() - visibleChainCount());
+}
+
+void clampScroll() {
+  chainScrollIndex = constrain(chainScrollIndex, 0, maxScrollIndex());
+}
+
+void drawChainViewport() {
+  clampScroll();
+
+  int viewportBottom = height - NODE_PANEL_H - MARGIN;
+  int viewportH = viewportBottom - chainY;
+
+  fill(18);
+  noStroke();
+  rect(chainX - 8, chainY - 10, chainW + 16, viewportH + 20, 12);
+
+  fill(255);
+  textSize(14);
+  textAlign(LEFT, BASELINE);
+  text("CHAIN VIEW  (scroll mouse wheel)", chainX, chainY - 16);
+
+  int startIndex = chainScrollIndex;
+  int endIndex = min(blockchain.size(), startIndex + visibleChainCount());
+  int y = chainY;
+
+  for (int i = startIndex; i < endIndex; i++) {
+    Block b = blockchain.get(i);
+    boolean validUpToHere = isBlockValidUpTo(i);
+
+    if (validUpToHere) fill(235);
+    else fill(255, 120, 120);
+
+    if (miningActive && i == miningIndex) fill(255, 225, 120);
+
+    stroke(60);
+    strokeWeight(1);
+
+    if (i == selectedIndex) {
+      stroke(80, 180, 255);
+      strokeWeight(3);
+    }
+
+    rect(chainX, y, chainW, chainCardH, 10);
+
+    fill(0);
+    textSize(13);
+    text("Block #" + b.index, chainX + 12, y + 20);
+    text("Citizen: " + b.citizen, chainX + 12, y + 38);
+    text("Complaint: " + b.complaint, chainX + 12, y + 56);
+    text("Status: " + b.resolution, chainX + 12, y + 74);
+
+    fill(0, 140, 90);
+    text("Prev: " + shortHash(b.prevHash), chainX + 285, y + 20);
+
+    fill(180, 120, 0);
+    text("Hash: " + shortHash(b.hash), chainX + 285, y + 38);
+
+    fill(validUpToHere ? color(50, 160, 80) : color(180, 50, 50));
+    text(validUpToHere ? "VALID" : "INVALID", chainX + 285, y + 56);
+
+    fill(0);
+    text("Nonce: " + b.nonce + "   Mined: " + b.mined, chainX + 12, y + 92);
+
+    y += chainCardH + chainGap;
+  }
+
+  noStroke();
+  fill(180);
+  textSize(12);
+
+  if (blockchain.size() > visibleChainCount()) {
+    text("Showing " + (startIndex + 1) + " to " + endIndex + " of " + blockchain.size(), chainX + 350, chainY - 16);
+  } else {
+    text("Showing all blocks", chainX + 350, chainY - 16);
+  }
+}
+
+/* ---------------- EDITOR ---------------- */
+
+void drawEditorPanel() {
+  fill(40);
+  noStroke();
+  rect(panelX, panelY, panelW, panelH, 12);
+
+  fill(255);
+  textSize(18);
+  textAlign(LEFT, BASELINE);
+  text("BLOCK EDITOR", panelX + 14, panelY + 28);
+
+  textSize(12);
+  fill(200);
+  text("Selected block: " + selectedIndex, panelX + 14, panelY + 48);
+  text("Click a field, type, then use buttons.", panelX + 14, panelY + 66);
+
+  drawInputField("Citizen", editCitizen, 0, panelY + 85);
+  drawInputField("Complaint", editComplaint, 1, panelY + 131);
+  drawInputField("Resolution", editResolution, 2, panelY + 177);
+
+  fill(180);
+  text("Active field: " + fieldName(activeField), panelX + 14, panelY + 235);
+
+  fill(hackerMode ? color(255, 120, 120) : color(160, 255, 170));
+  text("Hacker mode: " + (hackerMode ? "ON" : "OFF"), panelX + 14, panelY + 255);
+
+  fill(180);
+  text("Difficulty prefix: " + zeroPrefix(DIFFICULTY), panelX + 14, panelY + 275);
+}
+
+void drawInputField(String label, String value, int fieldIndex, int y) {
+  fill(210);
+  textSize(12);
+  text(label, fieldX, y - 6);
+
+  boolean active = (activeField == fieldIndex);
+  if (active) fill(255);
+  else fill(230);
+
+  stroke(active ? color(80, 180, 255) : color(90));
+  strokeWeight(active ? 3 : 1);
+  rect(fieldX, y, fieldW, fieldH, 8);
+
+  fill(10);
+  textSize(13);
+  String shown = value;
+  if (active && frameCount % 30 < 15) shown += "|";
+  text(shown, fieldX + 10, y + 22);
+}
+
+/* ---------------- BUTTONS ---------------- */
+
+void drawButtons() {
+  drawButton(btnX1, 270, btnW, btnH, "ADD BLOCK", color(0, 170, 255));
+  drawButton(btnX2, 270, btnW, btnH, "MINE CHAIN", color(255, 180, 0));
+
+  drawButton(btnX1, 314, btnW, btnH, "SAVE", color(80, 200, 120));
+  drawButton(btnX2, 314, btnW, btnH, "LOAD", color(120, 120, 255));
+
+  drawButton(btnX1, 358, btnW, btnH, "HACK MODE", hackerMode ? color(255, 80, 80) : color(120));
+  drawButton(btnX2, 358, btnW, btnH, "CLEAR", color(180));
+}
+
+void drawButton(int x, int y, int w, int h, String label, color c) {
+  fill(c);
+  stroke(30);
+  strokeWeight(1);
+  rect(x, y, w, h, 8);
+
+  fill(255);
+  textSize(13);
+  textAlign(CENTER, CENTER);
+  text(label, x + w/2, y + h/2 + 1);
+  textAlign(LEFT, BASELINE);
+}
+
+/* ---------------- NODE PANEL ---------------- */
+
+void drawNodePanel() {
+  int baseY = height - NODE_PANEL_H - MARGIN;
+
+  fill(32);
+  noStroke();
+  rect(20, baseY, 960, NODE_PANEL_H, 12);
+
+  fill(255);
+  textSize(16);
+  textAlign(LEFT, BASELINE);
+  text("NETWORK NODES", 34, baseY + 24);
+
+  int x = 190;
+  for (Node n : nodes) {
+    boolean synced = n.isSyncedWith(blockchain);
+
+    fill(synced ? color(220) : color(255, 120, 120));
+    rect(x, baseY + 12, 240, 48, 10);
+
+    fill(0);
+    textSize(12);
+    text(n.name + " | blocks: " + n.chain.size(), x + 10, baseY + 30);
+    text("Status: " + (synced ? "SYNCED" : "OUT OF DATE"), x + 10, baseY + 46);
+
+    x += 250;
+  }
+}
+
+/* ---------------- RIGHT SIDE EXTRA PANEL ---------------- */
+
+void drawSideInfoPanel() {
+  fill(44);
+  noStroke();
+  rect(sideInfoX, sideInfoY, sideInfoW, sideInfoH, 12);
+
+  fill(255);
+  textSize(16);
+  textAlign(LEFT, BASELINE);
+  text("LEDGER INFO", sideInfoX + 12, sideInfoY + 26);
+
+  fill(210);
+  textSize(12);
+  text("Scroll X: " + viewX, sideInfoX + 12, sideInfoY + 52);
+  text("Scroll Y: " + viewY, sideInfoX + 12, sideInfoY + 70);
+  text("Blocks: " + blockchain.size(), sideInfoX + 12, sideInfoY + 88);
+  text("Dirty blocks: " + countDirtyBlocks(), sideInfoX + 12, sideInfoY + 106);
+  text("Mining attempts: " + miningAttempts, sideInfoX + 12, sideInfoY + 124);
+  text("Difficulty: " + DIFFICULTY, sideInfoX + 12, sideInfoY + 142);
+
+  if (selectedIndex >= 0 && selectedIndex < blockchain.size()) {
+    Block b = blockchain.get(selectedIndex);
+    fill(255);
+    text("Selected #" + b.index, sideInfoX + 12, sideInfoY + 172);
+    fill(210);
+    text("Citizen: " + b.citizen, sideInfoX + 12, sideInfoY + 190);
+    text("Complaint: " + b.complaint, sideInfoX + 12, sideInfoY + 208);
+    text("Resolution: " + b.resolution, sideInfoX + 12, sideInfoY + 226);
+    text("Nonce: " + b.nonce, sideInfoX + 12, sideInfoY + 244);
+    text("Mined: " + b.mined, sideInfoX + 12, sideInfoY + 262);
+  } else {
+    fill(210);
+    text("No block selected.", sideInfoX + 12, sideInfoY + 180);
+  }
+}
+
+/* ---------------- FOOTER PANEL ---------------- */
+
+void drawFooterPanel() {
+  fill(36);
+  noStroke();
+  rect(footerPanelX, footerPanelY, footerPanelW, footerPanelH, 12);
+
+  fill(255);
+  textSize(16);
+  textAlign(LEFT, BASELINE);
+  text("CONTROLS / NOTES", footerPanelX + 12, footerPanelY + 26);
+
+  fill(220);
+  textSize(12);
+  text("Mouse wheel = vertical scroll", footerPanelX + 12, footerPanelY + 52);
+  text("Hold Shift + mouse wheel = horizontal scroll", footerPanelX + 12, footerPanelY + 70);
+  text("Click a block to load it into the editor", footerPanelX + 12, footerPanelY + 88);
+  text("ADD BLOCK inserts a new grievance after the last block", footerPanelX + 330, footerPanelY + 52);
+  text("MINE CHAIN recalculates and mines the whole chain from start", footerPanelX + 330, footerPanelY + 70);
+  text("SAVE / LOAD use " + saveFileName, footerPanelX + 330, footerPanelY + 88);
+  text("HACK MODE simulates tampering so validation can detect it", footerPanelX + 850, footerPanelY + 52);
+  text("Scrollbars on the right and bottom can also be dragged", footerPanelX + 850, footerPanelY + 70);
+  text("Selected field: " + fieldName(activeField), footerPanelX + 850, footerPanelY + 88);
+}
+
+/* ---------------- INPUT ---------------- */
+
+void mousePressed() {
+  if (checkScrollbarPress()) return;
+
+  worldMouseX = mouseX + viewX;
+  worldMouseY = mouseY + viewY;
+
+  if (clickButtons()) return;
+  if (clickFields()) return;
+  clickBlockchain();
+}
+
+boolean checkScrollbarPress() {
+  if (hitVerticalScrollbar(mouseX, mouseY)) {
+    draggingVScroll = true;
+    updateViewFromVerticalMouse(mouseY);
+    return true;
+  }
+
+  if (hitHorizontalScrollbar(mouseX, mouseY)) {
+    draggingHScroll = true;
+    updateViewFromHorizontalMouse(mouseX);
+    return true;
+  }
+
+  return false;
+}
+
+void mouseDragged() {
+  if (draggingVScroll) updateViewFromVerticalMouse(mouseY);
+  if (draggingHScroll) updateViewFromHorizontalMouse(mouseX);
+}
+
+void mouseReleased() {
+  draggingVScroll = false;
+  draggingHScroll = false;
+}
+
+void mouseWheel(MouseEvent event) {
+  float wheel = readWheelDelta(event);
+  if (wheel == 0) return;
+
+  if (shiftHeld) viewX += round(wheel * 50);
+  else viewY += round(wheel * 50);
+
+  clampView();
+}
+
+float readWheelDelta(MouseEvent event) {
+  try {
+    java.lang.reflect.Method m = event.getClass().getMethod("getAmount");
+    Object v = m.invoke(event);
+    if (v instanceof Number) return ((Number)v).floatValue();
+  } catch (Exception e) {
+    // fall through
+  }
+
+  try {
+    java.lang.reflect.Method m = event.getClass().getMethod("getCount");
+    Object v = m.invoke(event);
+    if (v instanceof Number) return ((Number)v).floatValue();
+  } catch (Exception e) {
+    // fall through
+  }
+
+  return 0;
+}
+
+boolean clickButtons() {
+  if (inside(worldMouseX, worldMouseY, btnX1, 270, btnW, btnH)) {
+    addBlockFromEditor();
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, btnX2, 270, btnW, btnH)) {
+    startMiningChain();
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, btnX1, 314, btnW, btnH)) {
+    saveBlockchain();
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, btnX2, 314, btnW, btnH)) {
+    loadBlockchain();
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, btnX1, 358, btnW, btnH)) {
+    toggleHackerMode();
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, btnX2, 358, btnW, btnH)) {
+    hackerMode = false;
+    nextHackFrame = 0;
+    statusMsg = "Hacker mode cleared.";
+    return true;
+  }
+
+  return false;
+}
+
+boolean clickFields() {
+  if (inside(worldMouseX, worldMouseY, fieldX, panelY + 85, fieldW, fieldH)) {
+    activeField = 0;
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, fieldX, panelY + 131, fieldW, fieldH)) {
+    activeField = 1;
+    return true;
+  }
+
+  if (inside(worldMouseX, worldMouseY, fieldX, panelY + 177, fieldW, fieldH)) {
+    activeField = 2;
+    return true;
+  }
+
+  return false;
+}
+
+void clickBlockchain() {
+  int startIndex = chainScrollIndex;
+  int endIndex = min(blockchain.size(), startIndex + visibleChainCount());
+  int y = chainY;
+
+  for (int i = startIndex; i < endIndex; i++) {
+    if (inside(worldMouseX, worldMouseY, chainX, y, chainW, chainCardH)) {
+      selectedIndex = i;
+      Block b = blockchain.get(i);
+      editCitizen = b.citizen;
+      editComplaint = b.complaint;
+      editResolution = b.resolution;
+      activeField = 0;
+      statusMsg = "Loaded Block #" + i + " into editor.";
+      return;
+    }
+    y += chainCardH + chainGap;
+  }
+}
+
+void keyPressed() {
+  if (key == CODED && keyCode == SHIFT) {
+    shiftHeld = true;
+    return;
+  }
+
+  if (key == CODED) return;
+
+  if (key == TAB || key == ENTER || key == RETURN) {
+    activeField = (activeField + 1) % 3;
+    return;
+  }
+
+  if (key == BACKSPACE || key == DELETE) {
+    backspaceActiveField();
+    return;
+  }
+
+  if (key >= 32) {
+    appendToActiveField(key);
+  }
+}
+
+void keyReleased() {
+  if (key == CODED && keyCode == SHIFT) {
+    shiftHeld = false;
+  }
+}
+
+void backspaceActiveField() {
+  if (activeField == 0 && editCitizen.length() > 0) {
+    editCitizen = editCitizen.substring(0, editCitizen.length() - 1);
+  } else if (activeField == 1 && editComplaint.length() > 0) {
+    editComplaint = editComplaint.substring(0, editComplaint.length() - 1);
+  } else if (activeField == 2 && editResolution.length() > 0) {
+    editResolution = editResolution.substring(0, editResolution.length() - 1);
+  }
+}
+
+void appendToActiveField(char c) {
+  if (activeField == 0) {
+    editCitizen += c;
+  } else if (activeField == 1) {
+    editComplaint += c;
+  } else if (activeField == 2) {
+    editResolution += c;
+  }
+}
+
+/* ---------------- ACTIONS ---------------- */
+
+void addBlockFromEditor() {
+  if (blockchain.size() == 0) return;
+
+  String prev = blockchain.get(blockchain.size() - 1).hash;
+
+  Block b = new Block(
+    blockchain.size(),
+    editCitizen.length() == 0 ? "Unknown" : editCitizen,
+    editComplaint.length() == 0 ? "Empty" : editComplaint,
+    editResolution.length() == 0 ? "Pending" : editResolution,
+    prev
+  );
+
+  blockchain.add(b);
+  selectedIndex = blockchain.size() - 1;
+  statusMsg = "Block added.";
+  clampScroll();
+}
+
+void startMiningChain() {
+  if (blockchain.size() == 0) return;
+
+  for (int i = 0; i < blockchain.size(); i++) {
+    Block b = blockchain.get(i);
+    b.mined = false;
+    b.nonce = 0;
+    b.prevHash = (i == 0) ? "0" : blockchain.get(i - 1).hash;
+    b.hash = b.calculateHash();
+  }
+
+  miningActive = true;
+  miningIndex = 0;
+  miningAttempts = 0;
+  statusMsg = "Mining started...";
+}
+
+void processMiningStep() {
+  if (!miningActive) return;
+  if (blockchain.size() == 0) {
+    miningActive = false;
+    return;
+  }
+
+  int steps = 0;
+  String targetPrefix = zeroPrefix(DIFFICULTY);
+
+  while (steps < MINING_STEPS_PER_FRAME && miningActive) {
+    if (miningIndex >= blockchain.size()) {
+      miningActive = false;
+      statusMsg = "Mining complete. Nodes synced.";
+      syncNodesFromMaster();
+      return;
+    }
+
+    Block b = blockchain.get(miningIndex);
+    b.prevHash = (miningIndex == 0) ? "0" : blockchain.get(miningIndex - 1).hash;
+    b.hash = b.calculateHash();
+    miningAttempts++;
+
+    if (b.hash.startsWith(targetPrefix)) {
+      b.mined = true;
+      miningIndex++;
+    } else {
+      b.nonce++;
+    }
+
+    steps++;
+  }
+
+  if (miningIndex < blockchain.size()) {
+    statusMsg = "Mining block #" + miningIndex + " | attempts: " + miningAttempts;
+  }
+}
+
+void toggleHackerMode() {
+  hackerMode = !hackerMode;
+  if (hackerMode) {
+    nextHackFrame = frameCount + 120;
+    statusMsg = "Hacker mode armed. Tamper demo will trigger soon.";
+  } else {
+    statusMsg = "Hacker mode turned off.";
+  }
+}
+
+void processHackerMode() {
+  if (!hackerMode || miningActive) return;
+  if (frameCount < nextHackFrame) return;
+  if (blockchain.size() <= 1) return;
+
+  int idx = 1 + int(random(blockchain.size() - 1)); // skip genesis
+  Block b = blockchain.get(idx);
+
+  b.complaint = b.complaint + " [TAMPERED]";
+  b.resolution = "HACKED";
+  b.mined = false;
+  b.nonce = 0;
+  b.hash = "TAMPER_" + shortHash(b.calculateHash());
+
+  selectedIndex = idx;
+  editCitizen = b.citizen;
+  editComplaint = b.complaint;
+  editResolution = b.resolution;
+  activeField = 1;
+
+  statusMsg = "ALERT! Hacker tampered with Block #" + idx + ".";
+  nextHackFrame = frameCount + 180;
+}
+
+void saveBlockchain() {
+  JSONArray arr = new JSONArray();
+
+  for (int i = 0; i < blockchain.size(); i++) {
+    Block b = blockchain.get(i);
+    JSONObject o = new JSONObject();
+    o.setInt("index", b.index);
+    o.setString("timestamp", b.timestamp);
+    o.setString("citizen", b.citizen);
+    o.setString("complaint", b.complaint);
+    o.setString("resolution", b.resolution);
+    o.setString("prevHash", b.prevHash);
+    o.setInt("nonce", b.nonce);
+    o.setString("hash", b.hash);
+    o.setBoolean("mined", b.mined);
+    arr.append(o);
+  }
+
+  saveJSONArray(arr, sketchPath(saveFileName));
+  statusMsg = "Saved to " + saveFileName;
+}
+
+void loadBlockchain() {
+  JSONArray arr = loadJSONArray(sketchPath(saveFileName));
+  if (arr == null) {
+    statusMsg = "No save file found: " + saveFileName;
+    return;
+  }
+
+  blockchain.clear();
+
+  for (int i = 0; i < arr.size(); i++) {
+    JSONObject o = arr.getJSONObject(i);
+    Block b = new Block(
+      o.getInt("index"),
+      o.getString("timestamp"),
+      o.getString("citizen"),
+      o.getString("complaint"),
+      o.getString("resolution"),
+      o.getString("prevHash"),
+      o.getInt("nonce"),
+      o.getString("hash"),
+      o.getBoolean("mined")
+    );
+    blockchain.add(b);
+  }
+
+  selectedIndex = -1;
+  syncNodesFromMaster();
+  clampScroll();
+  statusMsg = "Loaded from " + saveFileName;
+}
+
+void syncNodesFromMaster() {
+  for (Node n : nodes) {
+    n.syncFrom(blockchain);
+  }
+}
+
+void addGrievance(String name, String complaint) {
+  addGrievance(name, complaint, "Pending");
+}
+
+void addGrievance(String name, String complaint, String resolution) {
+  String prev = blockchain.get(blockchain.size() - 1).hash;
+  Block b = new Block(blockchain.size(), name, complaint, resolution, prev);
+  blockchain.add(b);
+}
+
+/* ---------------- VALIDATION ---------------- */
+
+boolean isChainValid() {
+  return isBlockValidUpTo(blockchain.size() - 1);
+}
+
+boolean isBlockValidUpTo(int index) {
+  if (index < 0) return true;
+
+  String prev = "0";
+  String targetPrefix = zeroPrefix(DIFFICULTY);
+
+  for (int i = 0; i <= index && i < blockchain.size(); i++) {
+    Block b = blockchain.get(i);
+    if (!b.prevHash.equals(prev)) return false;
+    if (!b.hash.equals(b.calculateHash())) return false;
+    if (!b.hash.startsWith(targetPrefix)) return false;
+    prev = b.hash;
+  }
+
+  return true;
+}
+
+int countDirtyBlocks() {
+  int count = 0;
+  String targetPrefix = zeroPrefix(DIFFICULTY);
+
+  for (Block b : blockchain) {
+    if (!b.hash.equals(b.calculateHash()) || !b.hash.startsWith(targetPrefix)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/* ---------------- UTIL ---------------- */
+
+boolean inside(int mx, int my, int x, int y, int w, int h) {
+  return mx >= x && mx <= x + w && my >= y && my <= y + h;
+}
+
+String shortHash(String s) {
+  if (s == null) return "";
+  if (s.length() <= 16) return s;
+  return s.substring(0, 16) + "...";
+}
+
+String zeroPrefix(int n) {
+  String s = "";
+  for (int i = 0; i < n; i++) s += "0";
+  return s;
+}
+
+String fieldName(int f) {
+  if (f == 0) return "Citizen";
+  if (f == 1) return "Complaint";
+  return "Resolution";
+}
+
+/* ---------------- CLASSES ---------------- */
+
+class Block {
+  int index;
+  String timestamp;
+  String citizen;
+  String complaint;
+  String resolution;
+  String prevHash;
+  String hash;
+  int nonce;
+  boolean mined;
+
+  Block(int i, String c, String co, String r, String p) {
+    index = i;
+    timestamp = new Date().toString();
+    citizen = c;
+    complaint = co;
+    resolution = r;
+    prevHash = p;
+    nonce = 0;
+    mined = false;
+    hash = calculateHash();
+  }
+
+  Block(int i, String ts, String c, String co, String r, String p, int n, String h, boolean m) {
+    index = i;
+    timestamp = ts;
+    citizen = c;
+    complaint = co;
+    resolution = r;
+    prevHash = p;
+    nonce = n;
+    hash = h;
+    mined = m;
+  }
+
+  String calculateHash() {
+    String data = index + "|" + timestamp + "|" + citizen + "|" + complaint + "|" + resolution + "|" + prevHash + "|" + nonce;
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hashBytes = digest.digest(data.getBytes("UTF-8"));
+      StringBuilder hex = new StringBuilder();
+
+      for (byte b : hashBytes) {
+        String h = Integer.toHexString(0xff & b);
+        if (h.length() == 1) hex.append('0');
+        hex.append(h);
+      }
+      return hex.toString();
+    } 
+    catch (Exception e) {
+      return "hash_error";
+    }
+  }
+
+  Block copy() {
+    return new Block(index, timestamp, citizen, complaint, resolution, prevHash, nonce, hash, mined);
+  }
+}
+
+class Node {
+  String name;
+  ArrayList<Block> chain = new ArrayList<Block>();
+
+  Node(String n) {
+    name = n;
+  }
+
+  void syncFrom(ArrayList<Block> source) {
+    chain.clear();
+    for (Block b : source) {
+      chain.add(b.copy());
+    }
+  }
+
+  boolean isSyncedWith(ArrayList<Block> master) {
+    if (chain.size() != master.size()) return false;
+
+    for (int i = 0; i < master.size(); i++) {
+      if (!chain.get(i).hash.equals(master.get(i).hash)) return false;
+      if (!chain.get(i).prevHash.equals(master.get(i).prevHash)) return false;
+      if (chain.get(i).nonce != master.get(i).nonce) return false;
+    }
+    return true;
+  }
+}
